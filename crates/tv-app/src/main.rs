@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use eframe::egui;
-use tv_core::MappedFile;
+use tv_core::{MappedFile, ByteHistogram};
 use tv_ui::{
     AppState, HexPanel, MinimapPanel, PerfState, PerfWindow,
     FileInfoWindow, SearchWindow, SignaturesWindow,
@@ -99,6 +99,13 @@ struct DiffResult {
     duration_ms: f64,
 }
 
+/// Result from histogram computation.
+struct HistogramResult {
+    histogram: ByteHistogram,
+    file_size: u64,
+    offset: u64,
+}
+
 /// Convert (x, y) coordinates to Hilbert curve index.
 fn xy2d(n: u32, x: u32, y: u32) -> u64 {
     let mut rx: u32;
@@ -187,6 +194,8 @@ struct TitanViewApp {
     diff_rx: Option<mpsc::Receiver<DiffResult>>,
     /// Receiver for Hilbert texture computation.
     hilbert_rx: Option<mpsc::Receiver<HilbertResult>>,
+    /// Receiver for histogram computation.
+    histogram_rx: Option<mpsc::Receiver<HistogramResult>>,
     // --- Session management ---
     /// Current session path (if saved/loaded).
     session_path: Option<PathBuf>,
@@ -223,6 +232,7 @@ impl Default for TitanViewApp {
             show_minimap: true,
             hilbert: HilbertState::default(),
             hilbert_rx: None,
+            histogram_rx: None,
             disasm: DisasmState::default(),
             inspector: InspectorState::default(),
             histogram: HistogramState::default(),
@@ -682,11 +692,26 @@ impl TitanViewApp {
                 }
             };
 
-            let block_size: u64 = 256;
+            // Adaptive block size based on file size:
+            // - Small files (<64MB): 256 bytes (high resolution)
+            // - Medium files (<1GB): 1KB
+            // - Large files (<4GB): 4KB
+            // - Very large files (>4GB): 16KB
+            // This keeps total blocks under ~1M for reasonable performance
+            let block_size: u64 = if file_len < 64 * 1024 * 1024 {
+                256
+            } else if file_len < 1024 * 1024 * 1024 {
+                1024
+            } else if file_len < 4 * 1024 * 1024 * 1024 {
+                4096
+            } else {
+                16384
+            };
             let total_blocks = file_len.div_ceil(block_size) as usize;
+            log::info!("Using block size {} for {} blocks", block_size, total_blocks);
 
-            // Process in chunks of ~16 MB to report progress
-            let bytes_per_chunk: u64 = 16 * 1024 * 1024;
+            // Process in chunks of ~64 MB to report progress (larger chunks = fewer GPU dispatches)
+            let bytes_per_chunk: u64 = 64 * 1024 * 1024;
             let mut offset: u64 = 0;
             let mut block_offset: usize = 0;
 
@@ -838,6 +863,11 @@ impl TitanViewApp {
                 .copy_from_slice(&chunk.values[..end - chunk.start_block]);
         }
 
+        // Invalidate minimap cache when new classification data arrives
+        if got_any {
+            self.state.minimap_cache.invalidate();
+        }
+
         if !got_any && self.computing_classification {
             match rx.try_recv() {
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -882,10 +912,13 @@ impl TitanViewApp {
                 .copy_from_slice(&chunk.values[..end - chunk.start_block]);
         }
 
-        // Check if channel is closed (computation done)
+        // Invalidate minimap cache when new entropy data arrives
         if got_any {
-            // Still receiving
-        } else if self.computing_entropy {
+            self.state.minimap_cache.invalidate();
+        }
+
+        // Check if channel is closed (computation done)
+        if !got_any && self.computing_entropy {
             // Try a non-blocking recv to check if closed
             match rx.try_recv() {
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1236,6 +1269,78 @@ impl TitanViewApp {
         }
     }
 
+    /// Launch histogram computation in background thread.
+    fn launch_histogram(&mut self) {
+        let file = match &self.state.file {
+            Some(f) => f,
+            None => {
+                self.histogram.computing = false;
+                return;
+            }
+        };
+
+        let file_len = file.mapped.len();
+        let path = file.path.clone();
+
+        // Determine what region to analyze based on scope
+        let (start, len) = match self.histogram.scope {
+            tv_ui::HistogramScope::FullFile => {
+                (0u64, file_len.min(self.histogram.max_bytes as u64))
+            }
+            tv_ui::HistogramScope::Viewport => {
+                let vp_start = self.state.viewport.start;
+                let vp_size = (self.state.viewport.visible_bytes as u64)
+                    .min(file_len - vp_start.min(file_len));
+                (vp_start, vp_size.min(self.histogram.max_bytes as u64))
+            }
+            tv_ui::HistogramScope::Selection => {
+                (0u64, file_len.min(self.histogram.max_bytes as u64))
+            }
+        };
+
+        let cached_file_size = self.histogram.cached_file_size();
+        let cached_offset = self.histogram.cached_offset();
+
+        let (tx, rx) = mpsc::channel();
+        self.histogram_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let file = match MappedFile::open(&path) {
+                Ok(f) => f,
+                Err(_) => return,
+            };
+
+            let data = file.slice(tv_core::FileRegion::new(start, len));
+            let histogram = ByteHistogram::from_data(data);
+
+            let _ = tx.send(HistogramResult {
+                histogram,
+                file_size: cached_file_size,
+                offset: cached_offset,
+            });
+        });
+    }
+
+    /// Poll histogram computation results.
+    fn poll_histogram(&mut self) {
+        let rx = match &self.histogram_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.histogram.set_result(result.histogram, result.file_size, result.offset);
+                self.histogram_rx = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.histogram.computing = false;
+                self.histogram_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     /// Poll deep scan results channel and accumulate chunks progressively.
     fn poll_deep_scan(&mut self) {
         let rx = match &self.deep_scan_rx {
@@ -1414,10 +1519,16 @@ impl eframe::App for TitanViewApp {
         self.poll_deep_scan();
         self.poll_hilbert();
         self.poll_diff();
+        self.poll_histogram();
 
         // Check if search was requested by the UI
         if self.state.search.searching && self.search_rx.is_none() {
             self.launch_search();
+        }
+
+        // Check if histogram computation was requested
+        if self.histogram.computing && self.histogram_rx.is_none() {
+            self.launch_histogram();
         }
 
         // Check if deep scan was requested by the UI
@@ -1438,7 +1549,8 @@ impl eframe::App for TitanViewApp {
         // Request repaint while computing or when any floating window needs updates
         if self.computing_entropy || self.computing_classification
             || self.state.search.searching || self.state.deep_scan.scanning
-            || self.hilbert.computing || self.state.diff.computing || self.perf.visible {
+            || self.hilbert.computing || self.state.diff.computing
+            || self.histogram.computing || self.perf.visible {
             ctx.request_repaint();
         }
 
@@ -1821,7 +1933,7 @@ impl eframe::App for TitanViewApp {
                 .default_width(60.0)
                 .width_range(40.0..=100.0)
                 .show(ctx, |ui| {
-                    MinimapPanel::show(ui, &mut self.state);
+                    MinimapPanel::show(ui, &mut self.state, self.computing_entropy);
                 });
         }
 

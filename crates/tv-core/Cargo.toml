@@ -16,7 +16,12 @@ serde_json = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = "3"
+flate2 = { workspace = true }
+rand = { workspace = true }
 
 [[bench]]
 name = "ingestion"
 harness = false
+
+[[example]]
+name = "generate_large_sample"

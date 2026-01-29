@@ -4,7 +4,7 @@
 //! useful for identifying encrypted/compressed data patterns.
 
 use egui::{Context, Color32, Pos2, Rect, Stroke, Vec2, FontId, Sense, RichText};
-use tv_core::{ByteHistogram, HistogramStats, FileRegion};
+use tv_core::{ByteHistogram, HistogramStats};
 use crate::state::AppState;
 
 /// Scope for histogram computation.
@@ -35,6 +35,10 @@ pub struct HistogramState {
     pub log_scale: bool,
     /// Show grid lines.
     pub show_grid: bool,
+    /// Whether histogram is being computed in background.
+    pub computing: bool,
+    /// Progress (0.0 - 1.0) for async computation.
+    pub progress: f32,
     /// Cached file size/offset for invalidation.
     cached_file_size: u64,
     cached_offset: u64,
@@ -46,10 +50,12 @@ impl Default for HistogramState {
             histogram: None,
             stats: None,
             scope: HistogramScope::FullFile,
-            max_bytes: 10 * 1024 * 1024, // 10 MB default
+            max_bytes: 64 * 1024 * 1024, // 64 MB for better coverage
             hovered_byte: None,
             log_scale: false,
             show_grid: true,
+            computing: false,
+            progress: 0.0,
             cached_file_size: 0,
             cached_offset: u64::MAX,
         }
@@ -61,15 +67,38 @@ impl HistogramState {
     pub fn clear(&mut self) {
         self.histogram = None;
         self.stats = None;
+        self.computing = false;
+        self.progress = 0.0;
         self.cached_file_size = 0;
         self.cached_offset = u64::MAX;
     }
 
     /// Check if histogram needs recomputing.
     pub fn needs_recompute(&self, file_size: u64, offset: u64) -> bool {
-        self.histogram.is_none()
+        !self.computing
+            && self.histogram.is_none()
             || self.cached_file_size != file_size
             || (self.scope == HistogramScope::Viewport && self.cached_offset != offset)
+    }
+
+    /// Set the computed histogram result.
+    pub fn set_result(&mut self, histogram: ByteHistogram, file_size: u64, offset: u64) {
+        self.stats = Some(histogram.stats());
+        self.histogram = Some(histogram);
+        self.cached_file_size = file_size;
+        self.cached_offset = offset;
+        self.computing = false;
+        self.progress = 1.0;
+    }
+
+    /// Get cached file size.
+    pub fn cached_file_size(&self) -> u64 {
+        self.cached_file_size
+    }
+
+    /// Get cached offset.
+    pub fn cached_offset(&self) -> u64 {
+        self.cached_offset
     }
 }
 
@@ -134,9 +163,23 @@ impl HistogramWindow {
             }
         });
 
-        // Compute histogram if needed
-        if hist_state.needs_recompute(file_size, offset) {
-            Self::compute_histogram(state, hist_state);
+        // Request histogram computation if needed (will be handled by main.rs)
+        if hist_state.needs_recompute(file_size, offset) && !hist_state.computing {
+            hist_state.computing = true;
+            hist_state.progress = 0.0;
+            hist_state.cached_file_size = file_size;
+            hist_state.cached_offset = offset;
+        }
+
+        // Show progress if computing
+        if hist_state.computing {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Computing histogram...");
+            });
+            if hist_state.progress > 0.0 {
+                ui.add(egui::ProgressBar::new(hist_state.progress).animate(true));
+            }
         }
 
         ui.separator();
@@ -181,9 +224,9 @@ impl HistogramWindow {
         // Histogram chart - clone to avoid borrow conflict
         if let Some(histogram) = hist_state.histogram.clone() {
             Self::draw_histogram(ui, &histogram, hist_state);
-        } else {
+        } else if !hist_state.computing {
             ui.centered_and_justified(|ui| {
-                ui.label("Computing histogram...");
+                ui.label("Click Refresh to compute histogram.");
             });
         }
 
@@ -202,39 +245,6 @@ impl HistogramWindow {
                 ui.label(format!("Frequency: {:.4}%", freq * 100.0));
             });
         }
-    }
-
-    fn compute_histogram(state: &AppState, hist_state: &mut HistogramState) {
-        let file = match &state.file {
-            Some(f) => f,
-            None => return,
-        };
-
-        let file_len = file.mapped.len();
-
-        let (start, len) = match hist_state.scope {
-            HistogramScope::FullFile => {
-                (0u64, file_len.min(hist_state.max_bytes as u64))
-            }
-            HistogramScope::Viewport => {
-                let vp_start = state.viewport.start;
-                let vp_size = (state.viewport.visible_bytes as u64).min(file_len - vp_start.min(file_len));
-                (vp_start, vp_size.min(hist_state.max_bytes as u64))
-            }
-            HistogramScope::Selection => {
-                // TODO: Support selection range
-                (0u64, file_len.min(hist_state.max_bytes as u64))
-            }
-        };
-
-        let data = file.mapped.slice(FileRegion::new(start, len));
-        let histogram = ByteHistogram::from_data(data);
-        let stats = histogram.stats();
-
-        hist_state.histogram = Some(histogram);
-        hist_state.stats = Some(stats);
-        hist_state.cached_file_size = file_len;
-        hist_state.cached_offset = state.viewport.start;
     }
 
     fn draw_histogram(ui: &mut egui::Ui, histogram: &ByteHistogram, hist_state: &mut HistogramState) {
@@ -284,10 +294,11 @@ impl HistogramWindow {
                 count as f64 / max_count
             };
 
-            let bar_height = (chart_rect.height() * height_ratio as f32).max(1.0);
+            // Minimum bar height of 3 pixels for visibility
+            let bar_height = (chart_rect.height() * height_ratio as f32).max(3.0);
             let bar_rect = Rect::from_min_max(
                 Pos2::new(x, chart_rect.bottom() - bar_height),
-                Pos2::new(x + bar_width - 1.0, chart_rect.bottom()),
+                Pos2::new(x + bar_width.max(2.0) - 1.0, chart_rect.bottom()),
             );
 
             // Color based on byte type
@@ -398,9 +409,9 @@ impl HistogramWindow {
         let spacing = 50.0;
 
         let items = [
-            (Color32::from_rgb(100, 100, 100), "Null/Ctrl"),
-            (Color32::from_rgb(100, 200, 100), "ASCII"),
-            (Color32::from_rgb(100, 150, 255), "High"),
+            (Color32::from_rgb(80, 100, 140), "Null/Ctrl"),
+            (Color32::from_rgb(100, 220, 100), "ASCII"),
+            (Color32::from_rgb(100, 160, 255), "High"),
         ];
 
         for (color, label) in items {
@@ -422,11 +433,11 @@ impl HistogramWindow {
 
     fn byte_color(byte: u8) -> Color32 {
         match byte {
-            0x00 => Color32::from_rgb(60, 60, 80),              // Null - dim
-            0x01..=0x1F => Color32::from_rgb(100, 100, 100),    // Control chars - gray
-            0x20..=0x7E => Color32::from_rgb(100, 200, 100),    // Printable ASCII - green
-            0x7F => Color32::from_rgb(100, 100, 100),           // DEL - gray
-            0x80..=0xFF => Color32::from_rgb(100, 150, 255),    // High bytes - blue
+            0x00 => Color32::from_rgb(80, 100, 140),            // Null - blue-gray (more visible)
+            0x01..=0x1F => Color32::from_rgb(140, 100, 140),    // Control chars - purple
+            0x20..=0x7E => Color32::from_rgb(100, 220, 100),    // Printable ASCII - green
+            0x7F => Color32::from_rgb(140, 100, 140),           // DEL - purple
+            0x80..=0xFF => Color32::from_rgb(100, 160, 255),    // High bytes - blue
         }
     }
 }

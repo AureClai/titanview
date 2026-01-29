@@ -785,14 +785,17 @@ impl GpuContext {
             total_bytes: u32,
             num_patterns: u32,
             max_results: u32,
-            _pad: u32,
+            max_pattern_len: u32,
         }
+
+        // Calculate max pattern length for shared memory sizing in shader
+        let max_pattern_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0) as u32;
 
         let params = Params {
             total_bytes: data.len() as u32,
             num_patterns: patterns.len() as u32,
             max_results,
-            _pad: 0,
+            max_pattern_len,
         };
 
         let params_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

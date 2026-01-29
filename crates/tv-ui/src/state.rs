@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tv_core::{MappedFile, ViewPort};
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
+use egui::Color32;
 
 /// Tab selection for signatures window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,6 +33,8 @@ pub struct DiffState {
     pub selected_diff: Option<usize>,
     /// Set of diff offsets for fast lookup (viewport-scoped).
     pub highlight_set: HashSet<u64>,
+    /// Viewport range the highlight_set was built for (to avoid rebuilding every frame).
+    pub highlight_viewport: (u64, u64),
     /// Current scroll offset for synchronized scrolling.
     pub scroll_offset: f32,
     /// Whether diff mode is active (split view in main window).
@@ -50,6 +53,7 @@ impl Default for DiffState {
             compute_time_ms: None,
             selected_diff: None,
             highlight_set: HashSet::new(),
+            highlight_viewport: (0, 0),
             scroll_offset: 0.0,
             active: false,
         }
@@ -65,6 +69,7 @@ impl DiffState {
         self.compute_time_ms = None;
         self.selected_diff = None;
         self.highlight_set.clear();
+        self.highlight_viewport = (0, 0);
         self.scroll_offset = 0.0;
     }
 
@@ -89,8 +94,15 @@ impl DiffState {
     }
 
     /// Rebuild highlight set for viewport range.
+    /// Uses caching to avoid rebuilding every frame when viewport hasn't changed.
     pub fn rebuild_highlights_for_viewport(&mut self, vp_start: u64, vp_end: u64) {
+        // Skip if already built for this viewport
+        if self.highlight_viewport == (vp_start, vp_end) && !self.highlight_set.is_empty() {
+            return;
+        }
+
         self.highlight_set.clear();
+        self.highlight_viewport = (vp_start, vp_end);
 
         let offsets = match &self.diff_offsets {
             Some(o) => o,
@@ -106,6 +118,12 @@ impl DiffState {
             }
             self.highlight_set.insert(offset);
         }
+    }
+
+    /// Force rebuild highlights (e.g., when diff results change).
+    pub fn invalidate_highlights(&mut self) {
+        self.highlight_viewport = (u64::MAX, 0);
+        self.highlight_set.clear();
     }
 }
 
@@ -279,6 +297,8 @@ pub struct AppState {
     pub inspector_highlights: HashSet<u64>,
     /// Hex editing state (DANGEROUS operation).
     pub edit: EditState,
+    /// Cached minimap pixels (avoid recomputing 16M+ block iterations every frame).
+    pub minimap_cache: MinimapCache,
 }
 
 /// Cached entropy statistics to avoid recomputing every frame.
@@ -286,6 +306,39 @@ pub struct AppState {
 pub struct EntropyStats {
     pub avg: f32,
     pub block_count: usize,
+}
+
+/// Cached minimap pixels to avoid recomputing downsampling every frame.
+/// For a 4GB file with 256-byte blocks, there are 16M blocks.
+/// Without caching, we iterate through all blocks every frame (34M+ iterations).
+/// With caching, we only recompute when data or height changes.
+#[derive(Default)]
+pub struct MinimapCache {
+    /// Pre-computed pixel colors for the minimap.
+    pub pixels: Vec<Color32>,
+    /// Height (in pixels) this cache was computed for.
+    pub cached_height: usize,
+    /// Number of entropy blocks when cache was computed.
+    pub cached_block_count: usize,
+    /// Whether classification was available when cache was computed.
+    pub cached_has_classification: bool,
+}
+
+impl MinimapCache {
+    /// Check if the cache is valid for the current state.
+    pub fn is_valid(&self, height: usize, block_count: usize, has_classification: bool) -> bool {
+        !self.pixels.is_empty()
+            && self.cached_height == height
+            && self.cached_block_count == block_count
+            && self.cached_has_classification == has_classification
+    }
+
+    /// Invalidate the cache (call when entropy/classification data changes).
+    pub fn invalidate(&mut self) {
+        self.pixels.clear();
+        self.cached_height = 0;
+        self.cached_block_count = 0;
+    }
 }
 
 /// State for the pattern search feature.
@@ -316,6 +369,89 @@ pub struct SignatureHit {
     pub magic: Vec<u8>,
 }
 
+/// Sort order for deep scan results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SignatureSortOrder {
+    #[default]
+    OffsetAsc,
+    OffsetDesc,
+    NameAsc,
+    NameDesc,
+    TypeAsc,
+}
+
+/// Signature type category for filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureCategory {
+    All,
+    Executables,
+    Archives,
+    Images,
+    Documents,
+    Databases,
+    Other,
+}
+
+impl Default for SignatureCategory {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
+impl SignatureCategory {
+    /// Check if a signature name matches this category.
+    pub fn matches(&self, name: &str) -> bool {
+        let name_lower = name.to_lowercase();
+        match self {
+            Self::All => true,
+            Self::Executables => {
+                name_lower.contains("exe") || name_lower.contains("elf")
+                || name_lower.contains("mach") || name_lower.contains("dll")
+                || name_lower.contains("mz") || name_lower.contains("pe")
+            }
+            Self::Archives => {
+                name_lower.contains("zip") || name_lower.contains("gz")
+                || name_lower.contains("7z") || name_lower.contains("rar")
+                || name_lower.contains("tar") || name_lower.contains("bz2")
+                || name_lower.contains("xz") || name_lower.contains("cab")
+            }
+            Self::Images => {
+                name_lower.contains("png") || name_lower.contains("jpg")
+                || name_lower.contains("jpeg") || name_lower.contains("gif")
+                || name_lower.contains("bmp") || name_lower.contains("webp")
+                || name_lower.contains("ico") || name_lower.contains("tiff")
+            }
+            Self::Documents => {
+                name_lower.contains("pdf") || name_lower.contains("doc")
+                || name_lower.contains("xml") || name_lower.contains("rtf")
+                || name_lower.contains("odf") || name_lower.contains("xls")
+            }
+            Self::Databases => {
+                name_lower.contains("sqlite") || name_lower.contains("db")
+                || name_lower.contains("sql")
+            }
+            Self::Other => {
+                !Self::Executables.matches(name) && !Self::Archives.matches(name)
+                && !Self::Images.matches(name) && !Self::Documents.matches(name)
+                && !Self::Databases.matches(name)
+            }
+        }
+    }
+
+    /// Display name for UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Executables => "Executables",
+            Self::Archives => "Archives",
+            Self::Images => "Images",
+            Self::Documents => "Documents",
+            Self::Databases => "Databases",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// State for the GPU deep scan feature (multi-pattern signature detection).
 #[derive(Default)]
 pub struct DeepScanState {
@@ -323,9 +459,17 @@ pub struct DeepScanState {
     pub scanning: bool,
     /// Results from the deep scan: all signatures found throughout the file.
     pub results: Option<Vec<SignatureHit>>,
+    /// Filtered and sorted indices into results (avoids re-sorting original).
+    pub filtered_indices: Vec<usize>,
+    /// Current sort order.
+    pub sort_order: SignatureSortOrder,
+    /// Current filter category.
+    pub filter_category: SignatureCategory,
+    /// Text filter (search in signature name).
+    pub filter_text: String,
     /// Scan duration in milliseconds.
     pub duration_ms: Option<f64>,
-    /// Currently selected result index (for navigation).
+    /// Currently selected result index (index into filtered_indices).
     pub selected_result: Option<usize>,
     /// Progress: bytes scanned so far.
     pub bytes_scanned: u64,
@@ -337,6 +481,7 @@ pub struct DeepScanState {
 
 impl DeepScanState {
     /// Update highlight set when a signature is selected.
+    /// selected_result is an index into filtered_indices.
     pub fn update_highlight(&mut self) {
         self.highlight_set.clear();
 
@@ -345,12 +490,18 @@ impl DeepScanState {
             None => return,
         };
 
+        // Get the actual result index from filtered_indices
+        let actual_idx = match self.filtered_indices.get(selected_idx) {
+            Some(&idx) => idx,
+            None => return,
+        };
+
         let results = match &self.results {
             Some(r) => r,
             None => return,
         };
 
-        if let Some(sig) = results.get(selected_idx) {
+        if let Some(sig) = results.get(actual_idx) {
             let sig_len = sig.magic.len() as u64;
             for i in 0..sig_len {
                 self.highlight_set.insert(sig.offset + i);
@@ -362,6 +513,83 @@ impl DeepScanState {
     pub fn clear_highlight(&mut self) {
         self.highlight_set.clear();
     }
+
+    /// Get the signature at the given filtered index.
+    pub fn get_filtered_signature(&self, filtered_idx: usize) -> Option<&SignatureHit> {
+        let actual_idx = *self.filtered_indices.get(filtered_idx)?;
+        self.results.as_ref()?.get(actual_idx)
+    }
+
+    /// Rebuild filtered_indices based on current filter and sort settings.
+    /// Call this after changing filter_category, filter_text, or sort_order.
+    pub fn rebuild_filtered_indices(&mut self) {
+        self.filtered_indices.clear();
+        self.selected_result = None;
+
+        let results = match &self.results {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Build list of indices matching the filter
+        let filter_text_lower = self.filter_text.to_lowercase();
+
+        for (i, sig) in results.iter().enumerate() {
+            // Category filter
+            if !self.filter_category.matches(&sig.name) {
+                continue;
+            }
+
+            // Text filter
+            if !filter_text_lower.is_empty() && !sig.name.to_lowercase().contains(&filter_text_lower) {
+                continue;
+            }
+
+            self.filtered_indices.push(i);
+        }
+
+        // Sort filtered indices
+        let results_ref = results;
+        match self.sort_order {
+            SignatureSortOrder::OffsetAsc => {
+                self.filtered_indices.sort_by_key(|&i| results_ref[i].offset);
+            }
+            SignatureSortOrder::OffsetDesc => {
+                self.filtered_indices.sort_by_key(|&i| std::cmp::Reverse(results_ref[i].offset));
+            }
+            SignatureSortOrder::NameAsc => {
+                self.filtered_indices.sort_by(|&a, &b| results_ref[a].name.cmp(&results_ref[b].name));
+            }
+            SignatureSortOrder::NameDesc => {
+                self.filtered_indices.sort_by(|&a, &b| results_ref[b].name.cmp(&results_ref[a].name));
+            }
+            SignatureSortOrder::TypeAsc => {
+                self.filtered_indices.sort_by(|&a, &b| {
+                    signature_type_order(&results_ref[a].name).cmp(&signature_type_order(&results_ref[b].name))
+                });
+            }
+        }
+    }
+
+    /// Get count of filtered results.
+    pub fn filtered_count(&self) -> usize {
+        self.filtered_indices.len()
+    }
+
+    /// Get total count of all results.
+    pub fn total_count(&self) -> usize {
+        self.results.as_ref().map_or(0, |r| r.len())
+    }
+}
+
+/// Helper to get a numeric order for signature types (for sorting).
+fn signature_type_order(name: &str) -> u8 {
+    if SignatureCategory::Executables.matches(name) { 0 }
+    else if SignatureCategory::Archives.matches(name) { 1 }
+    else if SignatureCategory::Images.matches(name) { 2 }
+    else if SignatureCategory::Documents.matches(name) { 3 }
+    else if SignatureCategory::Databases.matches(name) { 4 }
+    else { 5 }
 }
 
 /// A file that has been opened and memory-mapped.
@@ -451,6 +679,7 @@ impl Default for AppState {
             diff: DiffState::default(),
             inspector_highlights: HashSet::new(),
             edit: EditState::default(),
+            minimap_cache: MinimapCache::default(),
         }
     }
 }

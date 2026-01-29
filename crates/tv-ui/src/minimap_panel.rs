@@ -1,6 +1,6 @@
 use egui::{Color32, Rect, Sense, Ui, Vec2, Pos2};
 use tv_core::BlockClass;
-use crate::state::AppState;
+use crate::state::{AppState, MinimapCache};
 
 /// Right-side minimap showing per-block classification and entropy as a colored vertical bar.
 pub struct MinimapPanel;
@@ -9,11 +9,20 @@ pub struct MinimapPanel;
 const MINIMAP_WIDTH: f32 = 40.0;
 
 impl MinimapPanel {
-    pub fn show(ui: &mut Ui, state: &mut AppState) {
+    pub fn show(ui: &mut Ui, state: &mut AppState, computing: bool) {
         let entropy = match &state.entropy {
             Some(e) if !e.is_empty() => e,
             _ => {
-                ui.label("Computing...");
+                // Show progress bar while computing
+                if computing {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        ui.spinner();
+                        ui.label("Analyzing...");
+                    });
+                } else {
+                    ui.label("No data");
+                }
                 return;
             }
         };
@@ -21,8 +30,20 @@ impl MinimapPanel {
         let classification = state.classification.as_deref();
         let file_len = state.file_len();
         let num_blocks = entropy.len();
+        let has_classification = classification.is_some();
 
         let available_height = ui.available_height().max(100.0);
+        let pixel_rows = (available_height.ceil() as usize).max(1);
+
+        // Check if cache is valid, rebuild if needed
+        if !state.minimap_cache.is_valid(pixel_rows, num_blocks, has_classification) {
+            Self::rebuild_cache(
+                &mut state.minimap_cache,
+                entropy,
+                classification,
+                pixel_rows,
+            );
+        }
 
         let (response, painter) = ui.allocate_painter(
             Vec2::new(MINIMAP_WIDTH, available_height),
@@ -30,33 +51,10 @@ impl MinimapPanel {
         );
 
         let rect = response.rect;
-
-        // Downsample to pixel rows
-        let pixel_rows = (available_height.ceil() as usize).max(1);
         let row_height = available_height / pixel_rows as f32;
 
-        for row in 0..pixel_rows {
-            let frac_start = row as f32 / pixel_rows as f32;
-            let frac_end = (row + 1) as f32 / pixel_rows as f32;
-            let block_start = (frac_start * num_blocks as f32) as usize;
-            let block_end = ((frac_end * num_blocks as f32) as usize).min(num_blocks);
-
-            if block_start >= num_blocks {
-                break;
-            }
-
-            let max_entropy = entropy[block_start..block_end]
-                .iter()
-                .copied()
-                .fold(0.0f32, f32::max);
-
-            let color = if let Some(classes) = classification {
-                let dominant = dominant_block_class(&classes[block_start..block_end.min(classes.len())]);
-                classify_entropy_color(dominant, max_entropy)
-            } else {
-                entropy_to_color(max_entropy)
-            };
-
+        // Draw cached pixels (fast path - no iteration through blocks)
+        for (row, &color) in state.minimap_cache.pixels.iter().enumerate() {
             let y_start = rect.min.y + row as f32 * row_height;
             let y_end = y_start + row_height + 0.5;
 
@@ -117,6 +115,50 @@ impl MinimapPanel {
                     ));
                 }
             }
+        }
+    }
+
+    /// Rebuild the minimap pixel cache.
+    /// This is called once when entropy/classification data changes or window resizes.
+    /// For a 4GB file, this does 16M+ block iterations ONCE instead of every frame.
+    fn rebuild_cache(
+        cache: &mut MinimapCache,
+        entropy: &[f32],
+        classification: Option<&[u8]>,
+        pixel_rows: usize,
+    ) {
+        let num_blocks = entropy.len();
+
+        cache.pixels.clear();
+        cache.pixels.reserve(pixel_rows);
+        cache.cached_height = pixel_rows;
+        cache.cached_block_count = num_blocks;
+        cache.cached_has_classification = classification.is_some();
+
+        for row in 0..pixel_rows {
+            let frac_start = row as f32 / pixel_rows as f32;
+            let frac_end = (row + 1) as f32 / pixel_rows as f32;
+            let block_start = (frac_start * num_blocks as f32) as usize;
+            let block_end = ((frac_end * num_blocks as f32) as usize).min(num_blocks);
+
+            if block_start >= num_blocks {
+                cache.pixels.push(Color32::BLACK);
+                continue;
+            }
+
+            let max_entropy = entropy[block_start..block_end]
+                .iter()
+                .copied()
+                .fold(0.0f32, f32::max);
+
+            let color = if let Some(classes) = classification {
+                let dominant = dominant_block_class(&classes[block_start..block_end.min(classes.len())]);
+                classify_entropy_color(dominant, max_entropy)
+            } else {
+                entropy_to_color(max_entropy)
+            };
+
+            cache.pixels.push(color);
         }
     }
 }

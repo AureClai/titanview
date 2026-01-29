@@ -3,6 +3,79 @@ use tv_core::FileRegion;
 use crate::state::AppState;
 use crate::minimap_panel::class_to_subtle_bg;
 
+/// Lookup table for fast byte-to-hex conversion (avoids format! allocations).
+/// Each entry is "XX " (3 bytes) for values 0x00-0xFF.
+const HEX_LUT: &[&str; 256] = &[
+    "00 ", "01 ", "02 ", "03 ", "04 ", "05 ", "06 ", "07 ",
+    "08 ", "09 ", "0A ", "0B ", "0C ", "0D ", "0E ", "0F ",
+    "10 ", "11 ", "12 ", "13 ", "14 ", "15 ", "16 ", "17 ",
+    "18 ", "19 ", "1A ", "1B ", "1C ", "1D ", "1E ", "1F ",
+    "20 ", "21 ", "22 ", "23 ", "24 ", "25 ", "26 ", "27 ",
+    "28 ", "29 ", "2A ", "2B ", "2C ", "2D ", "2E ", "2F ",
+    "30 ", "31 ", "32 ", "33 ", "34 ", "35 ", "36 ", "37 ",
+    "38 ", "39 ", "3A ", "3B ", "3C ", "3D ", "3E ", "3F ",
+    "40 ", "41 ", "42 ", "43 ", "44 ", "45 ", "46 ", "47 ",
+    "48 ", "49 ", "4A ", "4B ", "4C ", "4D ", "4E ", "4F ",
+    "50 ", "51 ", "52 ", "53 ", "54 ", "55 ", "56 ", "57 ",
+    "58 ", "59 ", "5A ", "5B ", "5C ", "5D ", "5E ", "5F ",
+    "60 ", "61 ", "62 ", "63 ", "64 ", "65 ", "66 ", "67 ",
+    "68 ", "69 ", "6A ", "6B ", "6C ", "6D ", "6E ", "6F ",
+    "70 ", "71 ", "72 ", "73 ", "74 ", "75 ", "76 ", "77 ",
+    "78 ", "79 ", "7A ", "7B ", "7C ", "7D ", "7E ", "7F ",
+    "80 ", "81 ", "82 ", "83 ", "84 ", "85 ", "86 ", "87 ",
+    "88 ", "89 ", "8A ", "8B ", "8C ", "8D ", "8E ", "8F ",
+    "90 ", "91 ", "92 ", "93 ", "94 ", "95 ", "96 ", "97 ",
+    "98 ", "99 ", "9A ", "9B ", "9C ", "9D ", "9E ", "9F ",
+    "A0 ", "A1 ", "A2 ", "A3 ", "A4 ", "A5 ", "A6 ", "A7 ",
+    "A8 ", "A9 ", "AA ", "AB ", "AC ", "AD ", "AE ", "AF ",
+    "B0 ", "B1 ", "B2 ", "B3 ", "B4 ", "B5 ", "B6 ", "B7 ",
+    "B8 ", "B9 ", "BA ", "BB ", "BC ", "BD ", "BE ", "BF ",
+    "C0 ", "C1 ", "C2 ", "C3 ", "C4 ", "C5 ", "C6 ", "C7 ",
+    "C8 ", "C9 ", "CA ", "CB ", "CC ", "CD ", "CE ", "CF ",
+    "D0 ", "D1 ", "D2 ", "D3 ", "D4 ", "D5 ", "D6 ", "D7 ",
+    "D8 ", "D9 ", "DA ", "DB ", "DC ", "DD ", "DE ", "DF ",
+    "E0 ", "E1 ", "E2 ", "E3 ", "E4 ", "E5 ", "E6 ", "E7 ",
+    "E8 ", "E9 ", "EA ", "EB ", "EC ", "ED ", "EE ", "EF ",
+    "F0 ", "F1 ", "F2 ", "F3 ", "F4 ", "F5 ", "F6 ", "F7 ",
+    "F8 ", "F9 ", "FA ", "FB ", "FC ", "FD ", "FE ", "FF ",
+];
+
+/// Lookup table for hex without trailing space (for LayoutJob append).
+const HEX_LUT_NO_SPACE: &[&str; 256] = &[
+    "00", "01", "02", "03", "04", "05", "06", "07",
+    "08", "09", "0A", "0B", "0C", "0D", "0E", "0F",
+    "10", "11", "12", "13", "14", "15", "16", "17",
+    "18", "19", "1A", "1B", "1C", "1D", "1E", "1F",
+    "20", "21", "22", "23", "24", "25", "26", "27",
+    "28", "29", "2A", "2B", "2C", "2D", "2E", "2F",
+    "30", "31", "32", "33", "34", "35", "36", "37",
+    "38", "39", "3A", "3B", "3C", "3D", "3E", "3F",
+    "40", "41", "42", "43", "44", "45", "46", "47",
+    "48", "49", "4A", "4B", "4C", "4D", "4E", "4F",
+    "50", "51", "52", "53", "54", "55", "56", "57",
+    "58", "59", "5A", "5B", "5C", "5D", "5E", "5F",
+    "60", "61", "62", "63", "64", "65", "66", "67",
+    "68", "69", "6A", "6B", "6C", "6D", "6E", "6F",
+    "70", "71", "72", "73", "74", "75", "76", "77",
+    "78", "79", "7A", "7B", "7C", "7D", "7E", "7F",
+    "80", "81", "82", "83", "84", "85", "86", "87",
+    "88", "89", "8A", "8B", "8C", "8D", "8E", "8F",
+    "90", "91", "92", "93", "94", "95", "96", "97",
+    "98", "99", "9A", "9B", "9C", "9D", "9E", "9F",
+    "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7",
+    "A8", "A9", "AA", "AB", "AC", "AD", "AE", "AF",
+    "B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7",
+    "B8", "B9", "BA", "BB", "BC", "BD", "BE", "BF",
+    "C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7",
+    "C8", "C9", "CA", "CB", "CC", "CD", "CE", "CF",
+    "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
+    "D8", "D9", "DA", "DB", "DC", "DD", "DE", "DF",
+    "E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7",
+    "E8", "E9", "EA", "EB", "EC", "ED", "EE", "EF",
+    "F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7",
+    "F8", "F9", "FA", "FB", "FC", "FD", "FE", "FF",
+];
+
 /// Color for modified bytes in edit mode.
 const EDIT_COLOR: Color32 = Color32::from_rgb(255, 100, 100);
 const EDIT_BG: Color32 = Color32::from_rgb(80, 0, 0);
@@ -63,26 +136,28 @@ impl HexPanel {
             state.search.rebuild_highlights_for_viewport(vp_start, vp_end);
         }
 
-        // Get references to all highlight sets
+        // Extract all references BEFORE the closure to avoid borrowing state inside.
+        // This eliminates the need to clone HashMaps/HashSets every frame.
+        let file = match &state.file {
+            Some(f) => f,
+            None => return,
+        };
+        let mapped = &file.mapped;
+        let classification = state.classification.as_ref();
         let search_highlights = &state.search.highlight_set;
         let deep_scan_highlights = &state.deep_scan.highlight_set;
         let inspector_highlights = &state.inspector_highlights;
         let has_highlights = !search_highlights.is_empty() || !deep_scan_highlights.is_empty() || !inspector_highlights.is_empty();
 
-        // Capture edit state for the closure
+        // Capture edit state for the closure (use references, not clones)
         let edit_enabled = state.edit.enabled;
         let selected_offset = state.edit.selected_offset;
-        let pending_edits = state.edit.pending_edits.clone();
+        let pending_edits = &state.edit.pending_edits;
         let mut clicked_offset: Option<u64> = None;
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, ROW_HEIGHT, window_rows, |ui, row_range| {
-                let file = match &state.file {
-                    Some(f) => f,
-                    None => return,
-                };
-
                 ui.style_mut().override_font_id = Some(FontId::monospace(13.0));
 
                 for row_idx in row_range {
@@ -92,10 +167,10 @@ impl HexPanel {
                     }
 
                     let region = FileRegion::new(byte_offset, BYTES_PER_ROW);
-                    let data = file.mapped.slice(region);
+                    let data = mapped.slice(region);
 
                     // Compute classification background for this row's offset column
-                    let class_bg = state.classification.as_ref().and_then(|c| {
+                    let class_bg = classification.and_then(|c| {
                         let block_idx = (byte_offset / 256) as usize;
                         c.get(block_idx).map(|&v| class_to_subtle_bg(v))
                     });
@@ -167,9 +242,27 @@ impl HexPanel {
                                 let abs = byte_offset + j as u64;
                                 let byte_val = get_byte(abs, original_byte);
                                 let (fg, bg) = get_colors(abs);
-                                let mut s = format!("{:02X} ", byte_val);
-                                if j == 7 { s.push(' '); }
-                                job.append(&s, 0.0, egui::TextFormat {
+                                // Use lookup table instead of format! to avoid allocations
+                                let hex_str = if j == 7 {
+                                    // Need extra space after byte 7
+                                    let h = HEX_LUT_NO_SPACE[byte_val as usize];
+                                    job.append(h, 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: bg,
+                                        ..Default::default()
+                                    });
+                                    job.append("  ", 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: Color32::TRANSPARENT,
+                                        ..Default::default()
+                                    });
+                                    continue;
+                                } else {
+                                    HEX_LUT[byte_val as usize]
+                                };
+                                job.append(hex_str, 0.0, egui::TextFormat {
                                     font_id: FontId::monospace(13.0),
                                     color: fg,
                                     background: bg,
@@ -276,8 +369,9 @@ impl HexPanel {
     /// Show file B in diff mode with synchronized scroll.
     /// Returns the scroll offset for synchronization.
     pub fn show_file_b(ui: &mut Ui, state: &mut AppState, scroll_offset: f32) -> f32 {
-        let file_b = match &state.diff.file_b {
-            Some(f) => f,
+        // Check if file_b exists first
+        let file_len = match &state.diff.file_b {
+            Some(f) => f.mapped.len(),
             None => {
                 ui.centered_and_justified(|ui| {
                     ui.label("No file B loaded for comparison");
@@ -286,17 +380,20 @@ impl HexPanel {
             }
         };
 
-        let file_len = file_b.mapped.len();
         let total_rows = file_len.div_ceil(BYTES_PER_ROW);
 
-        // Rebuild diff highlights for the visible viewport
+        // Rebuild diff highlights for the visible viewport (uses caching)
+        // Must be done before taking references to avoid borrow conflicts
         {
             let vp_start = state.viewport.start;
             let vp_end = vp_start.saturating_add(BYTES_PER_ROW * 64).min(file_len);
             state.diff.rebuild_highlights_for_viewport(vp_start, vp_end);
         }
 
-        let diff_highlights = state.diff.highlight_set.clone();
+        // Now extract all references after mutable borrow is done
+        let file_b = state.diff.file_b.as_ref().unwrap(); // Safe: checked above
+        let mapped_b = &file_b.mapped;
+        let diff_highlights = &state.diff.highlight_set;
         let has_highlights = !diff_highlights.is_empty();
 
         let window_rows = if total_rows > MAX_DIRECT_ROWS {
@@ -312,11 +409,6 @@ impl HexPanel {
             .auto_shrink([false, false])
             .vertical_scroll_offset(scroll_offset)
             .show_rows(ui, ROW_HEIGHT, window_rows, |ui, row_range| {
-                let file = match &state.diff.file_b {
-                    Some(f) => f,
-                    None => return,
-                };
-
                 ui.style_mut().override_font_id = Some(FontId::monospace(13.0));
 
                 for row_idx in row_range {
@@ -326,7 +418,7 @@ impl HexPanel {
                     }
 
                     let region = FileRegion::new(byte_offset, BYTES_PER_ROW);
-                    let data = file.mapped.slice(region);
+                    let data = mapped_b.slice(region);
 
                     if !has_highlights {
                         let line = format_hex_line(byte_offset, data);
@@ -349,24 +441,36 @@ impl HexPanel {
                                 }
                             };
 
-                            // Hex with highlights
+                            // Hex with highlights - use lookup table
                             let mut job = egui::text::LayoutJob::default();
                             for (j, &b) in data.iter().enumerate() {
                                 let abs = byte_offset + j as u64;
                                 let (fg, bg) = highlight_colors(abs);
-                                let mut s = format!("{:02X} ", b);
-                                if j == 7 { s.push(' '); }
-                                job.append(&s, 0.0, egui::TextFormat {
-                                    font_id: FontId::monospace(13.0),
-                                    color: fg,
-                                    background: bg,
-                                    ..Default::default()
-                                });
+                                if j == 7 {
+                                    job.append(HEX_LUT_NO_SPACE[b as usize], 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: bg,
+                                        ..Default::default()
+                                    });
+                                    job.append("  ", 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: Color32::TRANSPARENT,
+                                        ..Default::default()
+                                    });
+                                } else {
+                                    job.append(HEX_LUT[b as usize], 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: bg,
+                                        ..Default::default()
+                                    });
+                                }
                             }
                             for j in data.len()..16 {
-                                let mut s = "   ".to_string();
-                                if j == 7 { s.push(' '); }
-                                job.append(&s, 0.0, egui::TextFormat {
+                                let padding = if j == 7 { "    " } else { "   " };
+                                job.append(padding, 0.0, egui::TextFormat {
                                     font_id: FontId::monospace(13.0),
                                     color: Color32::from_rgb(220, 220, 220),
                                     ..Default::default()
@@ -425,7 +529,7 @@ impl HexPanel {
         let file_len = state.file_len();
         let total_rows = file_len.div_ceil(BYTES_PER_ROW);
 
-        // Rebuild both search and diff highlights
+        // Rebuild both search and diff highlights (uses caching)
         {
             let vp_start = state.viewport.start;
             let vp_end = vp_start.saturating_add(BYTES_PER_ROW * 64).min(file_len);
@@ -433,9 +537,16 @@ impl HexPanel {
             state.diff.rebuild_highlights_for_viewport(vp_start, vp_end);
         }
 
+        // Extract all references before the closure to avoid clones
+        let file = match &state.file {
+            Some(f) => f,
+            None => return 0.0,
+        };
+        let mapped = &file.mapped;
+        let classification = state.classification.as_ref();
         let search_highlights = &state.search.highlight_set;
         let deep_scan_highlights = &state.deep_scan.highlight_set;
-        let diff_highlights = state.diff.highlight_set.clone();
+        let diff_highlights = &state.diff.highlight_set;
         let has_highlights = !search_highlights.is_empty() || !deep_scan_highlights.is_empty() || !diff_highlights.is_empty();
 
         let window_rows = if total_rows > MAX_DIRECT_ROWS {
@@ -451,11 +562,6 @@ impl HexPanel {
             .auto_shrink([false, false])
             .vertical_scroll_offset(scroll_offset)
             .show_rows(ui, ROW_HEIGHT, window_rows, |ui, row_range| {
-                let file = match &state.file {
-                    Some(f) => f,
-                    None => return,
-                };
-
                 ui.style_mut().override_font_id = Some(FontId::monospace(13.0));
 
                 for row_idx in row_range {
@@ -465,9 +571,9 @@ impl HexPanel {
                     }
 
                     let region = FileRegion::new(byte_offset, BYTES_PER_ROW);
-                    let data = file.mapped.slice(region);
+                    let data = mapped.slice(region);
 
-                    let class_bg = state.classification.as_ref().and_then(|c| {
+                    let class_bg = classification.and_then(|c| {
                         let block_idx = (byte_offset / 256) as usize;
                         c.get(block_idx).map(|&v| class_to_subtle_bg(v))
                     });
@@ -502,24 +608,36 @@ impl HexPanel {
                                 }
                             };
 
-                            // Hex with highlights
+                            // Hex with highlights - use lookup table
                             let mut job = egui::text::LayoutJob::default();
                             for (j, &b) in data.iter().enumerate() {
                                 let abs = byte_offset + j as u64;
                                 let (fg, bg) = highlight_colors(abs);
-                                let mut s = format!("{:02X} ", b);
-                                if j == 7 { s.push(' '); }
-                                job.append(&s, 0.0, egui::TextFormat {
-                                    font_id: FontId::monospace(13.0),
-                                    color: fg,
-                                    background: bg,
-                                    ..Default::default()
-                                });
+                                if j == 7 {
+                                    job.append(HEX_LUT_NO_SPACE[b as usize], 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: bg,
+                                        ..Default::default()
+                                    });
+                                    job.append("  ", 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: Color32::TRANSPARENT,
+                                        ..Default::default()
+                                    });
+                                } else {
+                                    job.append(HEX_LUT[b as usize], 0.0, egui::TextFormat {
+                                        font_id: FontId::monospace(13.0),
+                                        color: fg,
+                                        background: bg,
+                                        ..Default::default()
+                                    });
+                                }
                             }
                             for j in data.len()..16 {
-                                let mut s = "   ".to_string();
-                                if j == 7 { s.push(' '); }
-                                job.append(&s, 0.0, egui::TextFormat {
+                                let padding = if j == 7 { "    " } else { "   " };
+                                job.append(padding, 0.0, egui::TextFormat {
                                     font_id: FontId::monospace(13.0),
                                     color: Color32::from_rgb(220, 220, 220),
                                     ..Default::default()
@@ -967,15 +1085,15 @@ pub struct HexLine {
     pub ascii: String,
 }
 
-/// Format one row of hex output.
+/// Format one row of hex output using lookup tables (zero allocations per byte).
 pub fn format_hex_line(byte_offset: u64, data: &[u8]) -> HexLine {
     // Offset column
     let offset = format!("{:08X}  ", byte_offset);
 
-    // Hex column
+    // Hex column - use lookup table instead of format!
     let mut hex = String::with_capacity(50);
     for (j, &b) in data.iter().enumerate() {
-        hex.push_str(&format!("{:02X} ", b));
+        hex.push_str(HEX_LUT[b as usize]);
         if j == 7 {
             hex.push(' ');
         }

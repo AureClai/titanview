@@ -32,7 +32,7 @@ pub use disasm_window::{DisasmState, DisasmWindow};
 pub use diff_window::DiffWindow;
 pub use cfg_window::{CfgState, CfgWindow};
 pub use struct_inspector::{InspectorState, StructInspector};
-pub use histogram_window::{HistogramState, HistogramWindow};
+pub use histogram_window::{HistogramScope, HistogramState, HistogramWindow};
 pub use xrefs_window::{XRefsState, XRefsWindow};
 pub use bookmarks_window::{BookmarksState, BookmarksWindow};
 pub use scripting::ScriptState;
