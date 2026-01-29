@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "name": "",
+  "saved_at": "2026-01-29T16:04:30Z",
+  "file_path": "C:\\Users\\ACI\\Documents\\Claude\\LumenLog\\examples\\sample_file.tvts",
+  "viewport": {
+    "offset": 0
+  },
+  "windows": {
+    "file_info": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "search": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "signatures": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "hilbert": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "disasm": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "inspector": {
+      "visible": true,
+      "position": null,
+      "size": null
+    },
+    "histogram": {
+      "visible": true,
+      "position": null,
+      "size": null
+    },
+    "xrefs": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "bookmarks": {
+      "visible": true,
+      "position": null,
+      "size": null
+    },
+    "minimap": {
+      "visible": true,
+      "position": null,
+      "size": null
+    },
+    "diff": {
+      "visible": false,
+      "position": null,
+      "size": null
+    },
+    "perf": {
+      "visible": false,
+      "position": null,
+      "size": null
+    }
+  },
+  "bookmarks": [
+    {
+      "offset": 256,
+      "name": "Start",
+      "color": null
+    }
+  ],
+  "labels": [],
+  "custom_templates": [
+    {
+      "json": "{\n  \"name\": \"Simple Record\",\n  \"description\": \"A minimal template showing basic field types\",\n  \"fields\": [\n    {\n      \"name\": \"id\",\n      \"field_type\": {\n        \"type\": \"primitive\",\n        \"value\": \"u32\"\n      },\n      \"offset\": 0,\n      \"description\": \"Record identifier\"\n    },\n    {\n      \"name\": \"value\",\n      \"field_type\": {\n        \"type\": \"primitive\",\n        \"value\": \"f32\"\n      },\n      \"offset\": 4,\n      \"description\": \"Floating point value\"\n    },\n    {\n      \"name\": \"label\",\n      \"field_type\": {\n        \"type\": \"string\",\n        \"value\": 8\n      },\n      \"offset\": 8,\n      \"description\": \"Short text label\"\n    }\n  ],\n  \"size\": 16,\n  \"little_endian\": true\n}",
+      "source_path": null
+    }
+  ],
+  "inspector": {
+    "selected_template_name": "Simple Record",
+    "offset": 0,
+    "auto_detect": true
+  },
+  "search": {
+    "query": "",
+    "results": [],
+    "selected_index": null
+  },
+  "disasm": {
+    "address": 0,
+    "architecture": "X86_64",
+    "instruction_count": 100
+  },
+  "hilbert": {
+    "mode": "Entropy",
+    "order": 9,
+    "offset": 0
+  },
+  "histogram": {
+    "log_scale": false,
+    "scope": "FullFile"
+  },
+  "notes": ""
+}

@@ -1,0 +1,15 @@
+[package]
+name = "tv-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tv-core = { path = "../tv-core" }
+tv-gpu = { path = "../tv-gpu" }
+tv-ui = { path = "../tv-ui" }
+eframe = { workspace = true }
+rfd = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+pollster = { workspace = true }

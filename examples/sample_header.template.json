@@ -1,0 +1,136 @@
+{
+  "name": "TitanView Sample Header",
+  "description": "A sample binary format demonstrating all field types",
+  "little_endian": true,
+  "fields": [
+    {
+      "name": "magic",
+      "field_type": {
+        "type": "magic",
+        "value": [84, 86, 84, 83]
+      },
+      "offset": 0,
+      "description": "Magic bytes: TVTS (TitanView Test Sample)"
+    },
+    {
+      "name": "version_major",
+      "field_type": {
+        "type": "primitive",
+        "value": "u8"
+      },
+      "offset": 4,
+      "description": "Major version number"
+    },
+    {
+      "name": "version_minor",
+      "field_type": {
+        "type": "primitive",
+        "value": "u8"
+      },
+      "offset": 5,
+      "description": "Minor version number"
+    },
+    {
+      "name": "flags",
+      "field_type": {
+        "type": "flags",
+        "value": {
+          "base": "u16",
+          "bits": {
+            "1": "COMPRESSED",
+            "2": "ENCRYPTED",
+            "4": "SIGNED",
+            "8": "BIG_ENDIAN",
+            "16": "HAS_CHECKSUM",
+            "32": "DEBUG_INFO"
+          }
+        }
+      },
+      "offset": 6,
+      "description": "Feature flags"
+    },
+    {
+      "name": "file_type",
+      "field_type": {
+        "type": "enum",
+        "value": {
+          "base": "u8",
+          "values": {
+            "0": "UNKNOWN",
+            "1": "EXECUTABLE",
+            "2": "LIBRARY",
+            "3": "DATA",
+            "4": "ARCHIVE",
+            "5": "CONFIG"
+          }
+        }
+      },
+      "offset": 8,
+      "description": "Type of file"
+    },
+    {
+      "name": "reserved",
+      "field_type": {
+        "type": "byte_array",
+        "value": 3
+      },
+      "offset": 9,
+      "description": "Reserved for future use"
+    },
+    {
+      "name": "data_offset",
+      "field_type": {
+        "type": "primitive",
+        "value": "u32"
+      },
+      "offset": 12,
+      "description": "Offset to data section"
+    },
+    {
+      "name": "data_size",
+      "field_type": {
+        "type": "primitive",
+        "value": "u32"
+      },
+      "offset": 16,
+      "description": "Size of data section in bytes"
+    },
+    {
+      "name": "entry_count",
+      "field_type": {
+        "type": "primitive",
+        "value": "u16"
+      },
+      "offset": 20,
+      "description": "Number of entries"
+    },
+    {
+      "name": "checksum",
+      "field_type": {
+        "type": "primitive",
+        "value": "u16"
+      },
+      "offset": 22,
+      "description": "Header checksum"
+    },
+    {
+      "name": "timestamp",
+      "field_type": {
+        "type": "primitive",
+        "value": "u64"
+      },
+      "offset": 24,
+      "description": "Creation timestamp (Unix epoch)"
+    },
+    {
+      "name": "name",
+      "field_type": {
+        "type": "string",
+        "value": 32
+      },
+      "offset": 32,
+      "description": "File name or identifier"
+    }
+  ],
+  "size": 64
+}

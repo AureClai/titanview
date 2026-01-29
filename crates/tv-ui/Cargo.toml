@@ -1,0 +1,15 @@
+[package]
+name = "tv-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tv-core = { path = "../tv-core" }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+rfd = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rhai = { workspace = true }

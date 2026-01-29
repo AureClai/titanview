@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Debug
+*.pdb
+
+# Test files
+*.tvts
+*.titan-session
+*.titan-workspace
+/test-fixtures/
+/benches/fixtures/
+
+# Logs
+*.log
+
+# Claude
+.claude/

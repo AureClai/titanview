@@ -1,0 +1,19 @@
+[package]
+name = "tv-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tv-core = { path = "../tv-core" }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "gpu_compute"
+harness = false

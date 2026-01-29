@@ -1,0 +1,35 @@
+{
+  "name": "Simple Record",
+  "description": "A minimal template showing basic field types",
+  "little_endian": true,
+  "fields": [
+    {
+      "name": "id",
+      "field_type": {
+        "type": "primitive",
+        "value": "u32"
+      },
+      "offset": 0,
+      "description": "Record identifier"
+    },
+    {
+      "name": "value",
+      "field_type": {
+        "type": "primitive",
+        "value": "f32"
+      },
+      "offset": 4,
+      "description": "Floating point value"
+    },
+    {
+      "name": "label",
+      "field_type": {
+        "type": "string",
+        "value": 8
+      },
+      "offset": 8,
+      "description": "Short text label"
+    }
+  ],
+  "size": 16
+}
